@@ -1,0 +1,683 @@
+---
+title: "<center> AFG MSNA 2020 </center>"
+
+output: html_document
+   
+---
+
+<style type="text/css">
+.main-container {
+  max-width: 1800px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+
+```{r, echo=FALSE}
+knitr::opts_chunk$set(echo = FALSE, cache = FALSE,comment = NA, message = FALSE, warning=FALSE, fig.align = 'center' )
+```
+
+<center> Data Collection Monitoring Report. Last updated: `r substr(Sys.time(), 0, 19)`
+
+<!-- *** -->
+
+```{r, include=FALSE}
+library(knitr)
+library(kableExtra)
+library(lubridate)
+library(tidyr)
+library(gsubfn)
+library(dplyr)
+library(formattable)
+library(readxl)
+library(DT)
+library(plotly)
+library(stringr)
+source("functions/audit_function.R")
+`%notin%` <- Negate(`%in%`)
+
+assessment_start_date <- as.Date("2020-08-08")
+time_limit <- 29.5
+max_interv <- 6
+
+# import raw data
+data <- read_excel("input/processed/msna_2020_processed_raw_data.xlsx")
+
+# Sample
+sample_df <- read_excel("input/sample/WoAA_2020_Compiled_Sample_20200721.xlsx")
+sample_df <- sample_df %>% mutate(
+  pop_group_final = case_when(
+    pop_group == "recent_returnees" | pop_group == "non_recent_returnees" ~ "returnees",
+    TRUE ~ pop_group
+  ),
+  prov_key = paste0(province_kobo,"_",pop_group_final),
+  dist_key = paste0(district_kobo,"_",pop_group_final)
+)
+national_sample <- sample_df %>% group_by(pop_group) %>% summarise(
+  Target = sum(survey_buffer, na.rm = T)
+)
+prov_sample <- sample_df %>% group_by(prov_key, province, pop_group_final) %>% summarise(
+  Target = sum(survey_buffer, na.rm = T)
+)
+
+
+dist_sample <- read_excel("input/sample/dist_sample_updated.xlsx") %>% select(-c(Target_orginal)) %>% filter(Target != 0)
+
+openxlsx::write.xlsx(dist_sample, "dist_sample.xlsx")
+
+
+dist_sample_wrong_dist <- dist_sample %>% select(dist_key, pop_group_final,Target)
+
+gender_sample <- read_excel("input/sample/gender_sample.xlsx")
+
+
+data_tracking <- data %>% filter(interview_type == "hoh" | interview_number == "no" | is.na(interview_number))
+
+## Tracking at National level ##### 
+
+national_tracking <- data_tracking %>% 
+  group_by(pop_group_national) %>% 
+  summarise(Received = n(),
+            Deleted = sum(validity == "deleted", na.rm = T),
+            Accepted = sum(validity == "valid", na.rm = T)
+  )
+
+national_tracking_merged <- left_join(national_sample, national_tracking, by = c("pop_group"= "pop_group_national"))  %>%
+  mutate(
+    Remaining =  case_when(
+      is.na(Accepted) ~ Target,
+      TRUE ~ (Accepted - Target) * -1,
+    ),
+    Deletion_Rate = paste0(round((((Deleted / Received) * 100)), digits = 0 ), "%"),
+    perc_complete = paste0(round((((Accepted / Target) * 100)), digits = 0 ), "%"),
+    perc_complete = case_when(
+      perc_complete == "NA%" ~ NA_character_,
+      TRUE ~ perc_complete
+    ),
+    Deletion_Rate = case_when(
+      Deletion_Rate == "NA%" ~ NA_character_,
+      TRUE ~ Deletion_Rate
+    )
+    
+  ) %>% mutate_all(
+    funs(replace_na(.,0))) %>% ungroup()  %>% select(
+      Population_Group = pop_group, Target, Received, Accepted, Deleted, Deletion_Rate, perc_complete, Remaining
+    ) %>% mutate(
+      Population_Group = case_when(
+      Population_Group == "non_recent_idps" ~ "Non Recent IDPs",
+      Population_Group == "recent_idps" ~ "Recent IDPs",
+      Population_Group == "refugees" ~ "Refugees",
+      Population_Group == "non_recent_returnees" ~ "Non Recent Returnees",
+      Population_Group == "recent_returnees" ~ "Recent Returnees",
+      Population_Group == "vulnerable" ~ "Vulnerable",
+        
+      TRUE ~ Population_Group
+      )
+    )
+
+## Tracking by province ##### 
+
+province_tracking <- data_tracking %>% 
+  group_by(prov_key) %>% 
+  summarise(Received = n(),
+            Deleted = sum(validity == "deleted", na.rm = T),
+            Accepted = sum(validity == "valid", na.rm = T)
+  )
+
+province_tracking_merged <- left_join(prov_sample, province_tracking, by = "prov_key")  %>%
+  mutate(
+    Remaining =  case_when(
+      is.na(Accepted) ~ Target,
+      TRUE ~ (Accepted - Target) * -1,
+    ),
+    Deletion_Rate = paste0(round((((Deleted / Received) * 100)), digits = 0 ), "%"),
+    perc_complete = paste0(round((((Accepted / Target) * 100)), digits = 0 ), "%"),
+    perc_complete = case_when(
+      perc_complete == "NA%" ~ NA_character_,
+      TRUE ~ perc_complete
+    ),
+    Deletion_Rate = case_when(
+      Deletion_Rate == "NA%" ~ NA_character_,
+      TRUE ~ Deletion_Rate
+    )
+    
+  ) %>% mutate_all(
+    funs(replace_na(.,0))) %>% ungroup()  %>% select(
+      Province = province, Population_Group = pop_group_final, Target, Received, Accepted, Deleted, Deletion_Rate, perc_complete, Remaining
+    ) %>% mutate(
+      Population_Group = case_when(
+      Population_Group == "non_recent_idps" ~ "Non Recent IDPs",
+      Population_Group == "recent_idps" ~ "Recent IDPs",
+      Population_Group == "refugees" ~ "Refugees",
+      Population_Group == "returnees" ~ "Returnees",
+      Population_Group == "vulnerable" ~ "Vulnerable",
+      TRUE ~ Population_Group
+      )
+    )
+
+province_tracking_merged$Province <-stringr::str_to_sentence(province_tracking_merged$Province)
+
+## Tracking at district level ##### 
+
+district_tracking <- data_tracking %>% 
+  group_by(dist_key) %>% 
+  summarise(Received = n(),
+            Deleted = sum(validity == "deleted", na.rm = T),
+            Accepted = sum(validity == "valid", na.rm = T)
+  )
+
+district_tracking_merged <- left_join(dist_sample, district_tracking, by = "dist_key")  %>%
+  mutate(
+    Remaining =  case_when(
+      is.na(Accepted) ~ Target,
+      TRUE ~ (Accepted - Target) * -1,
+    ),
+    Deletion_Rate = paste0(round((((Deleted / Received) * 100)), digits = 0 ), "%"),
+    perc_complete = paste0(round((((Accepted / Target) * 100)), digits = 0 ), "%"),
+    perc_complete = case_when(
+      perc_complete == "NA%" ~ NA_character_,
+      TRUE ~ perc_complete
+    ),
+    Deletion_Rate = case_when(
+      Deletion_Rate == "NA%" ~ NA_character_,
+      TRUE ~ Deletion_Rate
+    )
+    
+  ) %>% mutate_all(
+    funs(replace_na(.,0))) %>% ungroup()  %>% select(
+      Province = province, District = district, Population_Group = pop_group_final, Target, Received, Accepted, Deleted, Deletion_Rate, perc_complete, Remaining
+    ) %>% mutate(
+      Population_Group = case_when(
+      Population_Group == "non_recent_idps" ~ "Non Recent IDPs",
+      Population_Group == "recent_idps" ~ "Recent IDPs",
+      Population_Group == "refugees" ~ "Refugees",
+      Population_Group == "returnees" ~ "Returnees",
+      Population_Group == "vulnerable" ~ "Vulnerable",
+      TRUE ~ Population_Group
+      )
+    ) %>% arrange(Province)
+
+district_tracking_merged$Province <-stringr::str_to_sentence(district_tracking_merged$Province)
+
+
+## Tracking Gender component
+gender_tracking <- data %>% filter(interview_type == "non_hoh") %>% 
+  group_by(province) %>% 
+  summarise(Received = n(),
+            Deleted = sum(validity == "deleted", na.rm = T),
+            Accepted = sum(validity == "valid", na.rm = T)
+  )
+
+gendert_tracking_merged <- left_join(gender_sample, gender_tracking, by = "province")  %>%
+  mutate(
+    Remaining =  case_when(
+      is.na(Accepted) ~ Target,
+      TRUE ~ (Accepted - Target) * -1,
+    ),
+    Deletion_Rate = paste0(round((((Deleted / Received) * 100)), digits = 0 ), "%"),
+    perc_complete = paste0(round((((Accepted / Target) * 100)), digits = 0 ), "%"),
+    perc_complete = case_when(
+      perc_complete == "NA%" ~ NA_character_,
+      TRUE ~ perc_complete
+    ),
+    Deletion_Rate = case_when(
+      Deletion_Rate == "NA%" ~ NA_character_,
+      TRUE ~ Deletion_Rate
+    )
+    
+  ) %>% mutate_all(
+    funs(replace_na(.,0))) %>% ungroup()  %>% select(
+      Province = province, Target, Received, Accepted, Deleted, Deletion_Rate, perc_complete, Remaining
+    ) %>% arrange(Province)
+
+gendert_tracking_merged$Province <-stringr::str_to_sentence(gendert_tracking_merged$Province)
+
+
+## Tracking Wrong Population Group ##### 
+district_wrong_pop <- data %>% 
+  group_by(dist_key, province, district, pop_group = pop_group_final) %>% 
+  summarise(Received = n(),
+            Deleted = sum(validity == "deleted", na.rm = T),
+            Accepted = sum(validity == "valid", na.rm = T)
+  )
+
+district_wrong_pop_merged <- left_join( district_wrong_pop, dist_sample_wrong_dist, by = "dist_key")  %>%
+  mutate(
+    Remaining =  case_when(
+      is.na(Accepted) ~ Target,
+      TRUE ~ (Accepted - Target) * -1,
+    ),
+    Deletion_Rate = paste0(round((((Deleted / Received) * 100)), digits = 0 ), "%"),
+    perc_complete = paste0(round((((Accepted / Target) * 100)), digits = 0 ), "%"),
+    perc_complete = case_when(
+      perc_complete == "NA%" ~ NA_character_,
+      TRUE ~ perc_complete
+    ),
+    Deletion_Rate = case_when(
+      Deletion_Rate == "NA%" ~ NA_character_,
+      TRUE ~ Deletion_Rate
+    )
+    
+  ) %>% mutate_all(
+    funs(replace_na(.,0))) %>% ungroup()  %>% select(
+      Province = province, District = district, Population_Group = pop_group, Target, Received, Accepted, Deleted, Deletion_Rate, perc_complete, Remaining
+    ) %>% mutate(
+      Population_Group = case_when(
+        Population_Group == "non_recent_idps" ~ "Non Recent IDPs",
+        Population_Group == "recent_idps" ~ "Recent IDPs",
+        Population_Group == "refugees" ~ "Refugees",
+        Population_Group == "returnees" ~ "Returnees",
+        Population_Group == "vulnerable" ~ "Vulnerable",
+        TRUE ~ Population_Group
+      )
+    ) %>% arrange(Province) %>% filter(Target == 0)
+
+district_wrong_pop_merged$Province <-stringr::str_to_sentence(district_wrong_pop_merged$Province)
+district_wrong_pop_merged$District <-stringr::str_to_sentence(district_wrong_pop_merged$District)
+
+
+# Overall progress General
+
+Overall_progress <- district_tracking_merged %>%
+  group_by(Province) %>%
+  summarise(Target = sum(Target),
+            Accepted = sum(Accepted, na.rm = T))
+
+
+Overall_progress_prov_graphs <- Overall_progress %>%
+  mutate(percentage =  round((Accepted / Target), digits = 3),
+          percentage = case_when(
+           percentage >= 1 ~ 1,
+           TRUE ~ percentage
+         ),
+         group=ifelse(percentage <0.5, "red",
+                      ifelse(percentage>=0.5 & percentage<0.8, "orange","green")),
+         label=paste0(percentage *100, "%"),
+         title = Province,
+         Province = stringr::str_replace_all(string=Province, pattern=" ", repl="")
+         ) %>%
+        select(variable = Province, percentage, group, label , title )
+
+
+overall_prog_1 <- paste0("Overall Progress: ", round(mean(Overall_progress_prov_graphs$percentage) * 100, 2) ,"%")
+
+# Overall progress non head of hosehold
+
+Overall_progress_gender <- gendert_tracking_merged %>%
+  group_by(Province) %>%
+  summarise(Target = sum(Target),
+            Accepted = sum(Accepted, na.rm = T))
+
+
+# # Overall progress %
+overall_prog <-  paste0("Overall Progress: ",round((sum(Overall_progress_gender$Accepted, na.rm = T) / sum(Overall_progress_gender$Target, na.rm = T)) * 100, 2), "%")
+  
+# # province grapho gender
+Overall_progress_prov_graphs_gender <- Overall_progress_gender %>%
+  mutate(percentage =  round((Accepted / Target), digits = 3),
+         percentage = case_when(
+           percentage >= 1 ~ 1,
+           TRUE ~ percentage
+         ),
+         group=ifelse(percentage <0.5, "red",
+                      ifelse(percentage>=0.5 & percentage<0.8, "orange","green")),
+         label=paste0(percentage *100, "%"),
+         title = Province,
+         Province = stringr::str_replace_all(string=Province, pattern=" ", repl="")
+         ) %>%
+        select(variable = Province, percentage, group, label , title )
+
+
+
+
+# ########################################################################################
+# 
+# Enumerator productivity
+
+enumerator_productivity <- data %>%
+  group_by(Date = today, Enumerator = enumerator_uuid) %>%
+  summarise(Interviews = n())
+
+enumerator_productivity_many <- enumerator_productivity %>%
+  filter(Interviews > max_interv)
+
+enumerator_productivity_less <- enumerator_productivity %>%
+  filter(Interviews < 4)
+
+enumerator_productivity_final <- rbind(enumerator_productivity_many, enumerator_productivity_less) %>% arrange(desc(Date))
+
+
+# Enumerator per survey status
+
+enumer_per_survey_status <- data %>%
+  group_by(Date = today, Enumerator = enumerator_uuid) %>%
+  summarise(Accepted = sum(validity == "valid", na.rm = T),
+            Deleted = sum(validity == "deleted", na.rm = T )
+  ) %>% arrange(desc(Date))
+
+# Survey status per day
+survey_status_per_day <- data %>%
+  group_by(Date = today) %>%
+  summarise(Accepted = sum(validity == "valid", na.rm = T),
+            Deleted = sum(validity == "deleted", na.rm = T )
+  ) %>% arrange(desc(Date))
+
+# survey lenght by enumerator
+
+survey_lenght <- data %>%
+  group_by(Enumerator = enumerator_uuid) %>%
+  summarise(
+    Average_duration = round(mean(interview_duration, na.rm = T),0)
+  )
+
+overall_survey_mean <- round(mean(as.numeric(data$interview_duration), na.rm = T),0)
+
+survey_lenght$Overall_average <-  overall_survey_mean
+
+# Enumerator with short interv duration
+short_interviews_by_enum <- data %>%
+  filter(interview_duration < time_limit) %>%
+  select(Date = today,
+         Enumerator = enumerator_uuid,
+         Province = province,
+         District = district,
+         Settlment = village_eng,
+         Duration =  interview_duration
+  ) %>% mutate(
+    Duration = round(Duration,0)
+  ) %>% arrange(desc(Date))
+
+# surveys done before start date
+started_before <- data %>% 
+  filter(today < assessment_start_date) %>% 
+  select(Date = today,
+         Enumerator = enumerator_uuid,
+         Province = province,
+         District = district,
+         Settlement = village_eng)
+
+# Average Flag by enumerator
+average_flags_df <- data %>% 
+  group_by(Enumerator = enumerator_uuid) %>%
+  summarise(`Average Flags` = round(mean(sum_checks), 1))
+
+# deletion
+deletion_summary <- data %>% 
+  group_by(province) %>% 
+  summarise(
+    Valid = sum(validity == "valid"),
+    Deleted = sum(validity == "deleted"),
+    Deletion_ratio = round(Deleted / n() * 100,1),
+    Too_Short = sum(deletion_criteria_time == "Check", na.rm = T),
+    # Too_Short_ratio = round(Too_Short / n() * 100,1),
+    FCS = sum(deletion_criteria_low_FCS_score == "Check", na.rm = T),
+    # FCS_ratio = round(FCS / n() * 100,2),
+    Too_long = sum(deletion_criteria_long_interview == "Check", na.rm = T),
+    # Too_long_ratio = round(Too_long / n() * 100,1),
+    Too_many_flags = sum(deletion_criteria_6_flags == "Check", na.rm = T),
+    # Too_many_flags_ratio = round(Too_many_flags / n() * 100,1),
+    Wrong_population = sum(deletion_criteria_wrong_population == "Check", na.rm = T),
+    Other = sum(!is.na(other_deletions), na.rm = T)
+    # Wrong_population_ratio = round(Wrong_population / n() * 100,1)
+    
+  )
+deletion_summary$province <-stringr::str_to_sentence(deletion_summary$province )
+
+```
+
+
+# {.tabset}
+
+## Overall Progress
+<center><h2> `r overall_prog_1`  </h2></center>
+
+***
+
+<center>**National, Population Groups Tracker**</center> </br>
+```{r eval=TRUE, echo=FALSE, results='asis'}
+kable(national_tracking_merged, col.names = c("Population Group","Target","Received",
+                           "Accepted", "Deleted", "Deletion Rate", "Progress", "Remaining"), align=rep('l', 5))%>%
+ kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),fixed_thead = T, full_width = F) %>% 
+   column_spec(4, color = "green") %>%
+   column_spec(5, color = "red") %>%
+   column_spec(6, color = "red") %>%
+   column_spec(7, color = "green") %>% 
+   column_spec(8, bold = T)
+  
+```
+
+***
+
+<center>**Province Progress**</center> </br>
+```{r eval=TRUE, echo=FALSE, results='asis' , fig.width=12,fig.height=12}
+
+ggplot(Overall_progress_prov_graphs, aes(fill = group, ymax = percentage, ymin = 0, xmax = 2, xmin = 1)) +
+  geom_rect(aes(ymax=1, ymin=0, xmax=2, xmin=1), fill ="#d1d3d4") +
+  geom_rect() +
+  coord_polar(theta = "y",start=-pi/2) + xlim(c(0, 2)) + ylim(c(0,2)) +
+  geom_text(aes(x = 0, y = 0, label = label), size=5, family="Poppins SemiBold") +
+  geom_text(aes(x=0.5, y=1.5, label=title), family="Poppins Light", size=4.2) +
+  facet_wrap(~title, ncol = 6) +
+  theme_void() +
+  scale_fill_manual(values = c("red"="#ee5859", "orange"="#ff9933", "green"="#5B8930")) +
+  scale_colour_manual(values = c("red"="#C9146C", "orange"="#DA9112", "green"="#129188")) +
+  theme(strip.background = element_blank(),
+        strip.text.x = element_blank()) +
+  guides(fill=FALSE) +
+  guides(colour=FALSE)
+
+
+
+```
+
+
+***
+
+
+## Tracking - Province
+
+```{r eval=TRUE, echo=FALSE, results='asis'}
+DT::datatable(province_tracking_merged, extensions = c('Buttons','RowGroup'),
+              colnames=c("Province", "Population Group", "Target", "Received", "Accepted", "Deleted", "Deletion Rate", "Progress", "Remaining"),
+              options = list(
+                  pageLength = 200,
+                  dom = 'Bfrtip',
+                  buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                  columnDefs = list(list(className = 'dt-center', targets = 3:9)),
+                  rowGroup = list(dataSrc = 1)
+                )
+              
+              )  %>% 
+  formatStyle('Deleted',  color = 'red', fontWeight = 'bold') %>%
+  formatStyle('Accepted',  color = 'green', fontWeight = 'bold') %>%
+  formatStyle('Deletion_Rate',  color = 'red', fontWeight = 'bold') %>%
+  formatStyle('perc_complete',  color = 'green', fontWeight = 'bold') %>%
+  formatStyle('Remaining', fontWeight = 'bold')
+```
+
+***
+
+## Tracking - District
+
+```{r eval=TRUE, echo=FALSE, results='asis'}
+DT::datatable(district_tracking_merged, extensions = c('Buttons','RowGroup'),
+              colnames=c("Province", "District", "Population Group", "Target", "Received", "Accepted", "Deleted", "Deletion Rate", "Progress", "Remaining"),
+              options = list(
+                  pageLength = 400,
+                  dom = 'Bfrtip',
+                  buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                  columnDefs = list(list(className = 'dt-center', targets = 4:9)),
+                  rowGroup = list(dataSrc = 1)
+                )
+              
+              )  %>% 
+  formatStyle('Deleted',  color = 'red', fontWeight = 'bold') %>%
+  formatStyle('Accepted',  color = 'green', fontWeight = 'bold') %>%
+  formatStyle('Deletion_Rate',  color = 'red', fontWeight = 'bold') %>%
+  formatStyle('perc_complete',  color = 'green', fontWeight = 'bold') %>%
+  formatStyle('Remaining', fontWeight = 'bold')
+```
+
+***
+
+## Wrong Districts
+<center>**Interviews Done in Wrong Districts**</center> </br>
+```{r eval=TRUE, echo=FALSE, results='asis'}
+DT::datatable(district_wrong_pop_merged, extensions = c('Buttons','RowGroup'),
+              colnames=c("Province", "District", "Population Group", "Target", "Received", "Accepted", "Deleted", "Deletion Rate", "Progress", "Remaining"),
+              options = list(
+                  pageLength = 400,
+                  dom = 'Bfrtip',
+                  buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                  columnDefs = list(list(className = 'dt-center', targets = 4:9)),
+                  rowGroup = list(dataSrc = 1)
+                )
+              
+              )  %>% 
+  formatStyle('Deleted',  color = 'red', fontWeight = 'bold') %>%
+  formatStyle('Accepted',  color = 'green', fontWeight = 'bold') %>%
+  formatStyle('Deletion_Rate',  color = 'red', fontWeight = 'bold') %>%
+  formatStyle('perc_complete',  color = 'green', fontWeight = 'bold') %>%
+  formatStyle('Remaining', fontWeight = 'bold')
+```
+
+***
+
+
+## Tracking - Gender  
+
+<center>**Gender Interview Tracker**</center> </br> 
+
+
+```{r eval=TRUE, echo=FALSE, results='asis'}
+kable(gendert_tracking_merged, col.names = c("Province","Target","Received",
+                           "Accepted", "Deleted", "Deletion Rate", "Progress", "Remaining"), align=rep('l', 5)) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),fixed_thead = T, full_width = F) %>% 
+  column_spec(4, color = "green") %>%
+  column_spec(5, color = "red") %>%
+  column_spec(6, color = "red") %>%
+  column_spec(7, color = "green") %>%
+  column_spec(8, bold = T) 
+  
+ggplot(Overall_progress_prov_graphs_gender, aes(fill = group, ymax = percentage, ymin = 0, xmax = 2, xmin = 1)) +
+  geom_rect(aes(ymax=1, ymin=0, xmax=2, xmin=1), fill ="#d1d3d4") +
+  geom_rect() +
+  coord_polar(theta = "y",start=-pi/2) + xlim(c(0, 2)) + ylim(c(0,2)) +
+  geom_text(aes(x = 0, y = 0, label = label), size=4, family="Poppins SemiBold") +
+  geom_text(aes(x=0.5, y=1.5, label=title), family="Poppins Light", size=4) +
+  facet_wrap(~title, ncol = 4) +
+  theme_void() +
+  scale_fill_manual(values = c("red"="#ee5859", "orange"="#ff9933", "green"="#5B8930")) +
+  scale_colour_manual(values = c("red"="#C9146C", "orange"="#DA9112", "green"="#129188")) +
+  theme(strip.background = element_blank(),
+        strip.text.x = element_blank()) +
+  guides(fill=FALSE) +
+  guides(colour=FALSE)
+
+
+```
+
+
+***
+
+## General Checks  
+
+<center>**Surveys made before the first day of data collection (**`r assessment_start_date`**)**</center> </br> 
+
+```{r eval=TRUE, echo=FALSE, results='asis'}
+kable(started_before)%>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),fixed_thead = T, full_width = F)
+```
+
+***
+
+<center>**Enumerators who made a survey below 30 minutes** </center> </br>
+
+```{r eval=TRUE, echo=FALSE, results='asis'}
+kable(short_interviews_by_enum)%>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),fixed_thead = T, full_width = F)
+```
+
+***
+
+<center>**Number of survey per day of data collection** </center> </br>
+
+```{r eval=TRUE, echo=FALSE, results='asis'}
+kable(survey_status_per_day)%>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),fixed_thead = T, full_width = F)
+```
+
+***
+
+<center>**Surveyors with very low or high productivity** </center> </br>
+
+```{r eval=TRUE, echo=FALSE, results='asis'}
+kable(enumerator_productivity_final)%>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),fixed_thead = T, full_width = F)
+```
+
+***
+
+
+
+<center>**Average Flags by Enumerator** </center> </br>
+
+```{r eval=TRUE, echo=FALSE, results='asis'}
+kable(average_flags_df)%>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),fixed_thead = T, full_width = F)
+```
+
+***
+
+
+<center>**Average interview duration by enumerator** </center> </br>
+
+```{r eval=TRUE, echo=FALSE, results='asis'}
+kable(survey_lenght)%>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),fixed_thead = T, full_width = F)
+```
+
+***
+
+## Enumerator Progress
+
+
+```{r eval=TRUE, echo=FALSE, results='asis'}
+
+DT::datatable(enumer_per_survey_status ,extensions = 'Buttons',
+              options = list(
+                  buttons = c('csv', 'excel', 'pdf'),
+                  columnDefs = list(list(className = 'dt-center', targets = 3:4)),
+                  pageLength = 100,
+                  dom = 'Bfrtip'
+                )
+  ) %>%
+  formatStyle('Deleted',  color = 'red', fontWeight = 'bold') %>%
+  formatStyle('Accepted',  color = 'green', fontWeight = 'bold')
+
+```
+
+***
+
+## Deletion Summary
+
+```{r eval=TRUE, echo=FALSE, results='asis'}
+
+DT::datatable(deletion_summary ,extensions = 'Buttons',
+               colnames = c("Province","Valid","Deleted",
+                           "Deletion Rate", "Short Interviews", "Low FCS", "Long Interviews", "Too many Flags", "Wrong Pop", "Other"),
+              options = list(
+                  buttons = c('csv', 'excel', 'pdf'),
+                  columnDefs = list(list(className = 'dt-center', targets = 2:9)),
+                  pageLength = 100,
+                  dom = 'Bfrtip'
+                )
+  ) 
+
+```
+
+***
+
+
+
